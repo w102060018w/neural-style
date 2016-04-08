@@ -78,28 +78,45 @@ local function main(params)
       cnn:cl()
     end
   end
-  
+  --main start here, load image, 3 == RGB
   local content_image = image.load(params.content_image, 3)
+  --reshape the image into image_size, using the bilinear interpolation method
   content_image = image.scale(content_image, params.image_size, 'bilinear')
+  --preprocess the image to fit in the caffe model. ex, turn it into BGR color channel
   local content_image_caffe = preprocess(content_image):float()
-  
+  --here for the preprocess function, also turn it into float type
+  --[[
+  function preprocess(img)
+  local mean_pixel = torch.DoubleTensor({103.939, 116.779, 123.68})
+  local perm = torch.LongTensor{3, 2, 1}
+  img = img:index(1, perm):mul(256.0)
+  mean_pixel = mean_pixel:view(3, 1, 1):expandAs(img)
+  img:add(-1, mean_pixel)
+  return img
+end]]
   local style_size = math.ceil(params.style_scale * params.image_size)
+  --for there may be multiple style img input, so there exist a list
   local style_image_list = params.style_image:split(',')
   local style_images_caffe = {}
+ --_stands for unused variable. ex, 1,2,3... indexing in the scheme
+ --do the same thing as content img
   for _, img_path in ipairs(style_image_list) do
     local img = image.load(img_path, 3)
     img = image.scale(img, style_size, 'bilinear')
     local img_caffe = preprocess(img):float()
     table.insert(style_images_caffe, img_caffe)
   end
+  --reference for ipairs:
+  --http://huli.logdown.com/posts/198866-lua-table
 
   -- Handle style blending weights for multiple style inputs
-  local style_blend_weights = nil
+  local style_blend_weights = nil --initialization
   if params.style_blend_weights == 'nil' then
     -- Style blending not specified, so use equal weighting
     style_blend_weights = {}
     for i = 1, #style_image_list do
       table.insert(style_blend_weights, 1.0)
+      --insert the style_blend_weight at the beginning? why insert it at the beginning?
     end
   else
     style_blend_weights = params.style_blend_weights:split(',')
@@ -109,14 +126,15 @@ local function main(params)
   -- Normalize the style blending weights so they sum to 1
   local style_blend_sum = 0
   for i = 1, #style_blend_weights do
-    style_blend_weights[i] = tonumber(style_blend_weights[i])
+    style_blend_weights[i] = tonumber(style_blend_weights[i])--since after split, it's still string type
     style_blend_sum = style_blend_sum + style_blend_weights[i]
   end
   for i = 1, #style_blend_weights do
     style_blend_weights[i] = style_blend_weights[i] / style_blend_sum
   end
   
-
+--deal with the backend parameters
+--nn(CUDA backend),cudnn(cuDNN backend),clnn(OpenCL)
   if params.gpu >= 0 then
     if params.backend ~= 'clnn' then
       content_image_caffe = content_image_caffe:cuda()
@@ -133,11 +151,19 @@ local function main(params)
   
   local content_layers = params.content_layers:split(",")
   local style_layers = params.style_layers:split(",")
+  
+  --[[
+  Module is an abstract class which defines fundamental methods necessary for a training a neural network. Modules are serializable.
+  Modules contain two states variables: output and gradInput.
+  from the nn.Module: https://github.com/torch/nn/blob/master/doc/module.md
+  ]]
 
   -- Set up the network, inserting style and content loss modules
   local content_losses, style_losses = {}, {}
+  --notice that lua array start from 1, instead of starting from 0
   local next_content_idx, next_style_idx = 1, 1
   local net = nn.Sequential()
+  --tv_weight deals with TV regularization, higher value will be more smooth lower will be less smooth.
   if params.tv_weight > 0 then
     local tv_mod = nn.TVLoss(params.tv_weight):float()
     if params.gpu >= 0 then
@@ -154,7 +180,9 @@ local function main(params)
       local layer = cnn:get(i)
       local name = layer.name
       local layer_type = torch.type(layer)
+      --?
       local is_pooling = (layer_type == 'cudnn.SpatialMaxPooling' or layer_type == 'nn.SpatialMaxPooling')
+      -- pooling layer has two options:max-pooling or average-pooling
       if is_pooling and params.pooling == 'avg' then
         assert(layer.padW == 0 and layer.padH == 0)
         local kW, kH = layer.kW, layer.kH
@@ -179,6 +207,7 @@ local function main(params)
         local norm = params.normalize_gradients
         local loss_module = nn.ContentLoss(params.content_weight, target, norm):float()
         if params.gpu >= 0 then
+           --clnn?
           if params.backend ~= 'clnn' then
             loss_module:cuda()
           else
@@ -441,6 +470,10 @@ function StyleLoss:__init(strength, target, normalize)
   self.crit = nn.MSECriterion()
 end
 
+--[[
+Computes the output using the current parameter set of the class and input. This function returns the result which is stored in the output field
+]]
+
 function StyleLoss:updateOutput(input)
   self.G = self.gram:forward(input)
   self.G:div(input:nElement())
@@ -497,4 +530,4 @@ end
 
 
 local params = cmd:parse(arg)
-main(params)
+main(params)require 'torch'
